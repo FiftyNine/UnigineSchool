@@ -22,7 +22,7 @@ private:
 
 	T * get_memory(int count) {
 		void * p = nullptr;
-		if (!is_small() && std::is_trivially_copyable<T>::value)
+		if (!is_small() && std::is_trivially_move_constructible<T>::value)
 			p = realloc(data_, count*sizeof(T));
 		else
 			p = malloc(count*sizeof(T));
@@ -163,6 +163,11 @@ public:
 		return data_ + size_;
 	}
 
+	T & back() const {
+		assert(size() > 0);
+		return data_[size_ - 1];
+	}
+
 	void clear() {
 		resize(0);
 	}
@@ -190,11 +195,13 @@ public:
 	void reserve(int min_capacity) {
 		if (min_capacity > capacity()) {
 			T * new_data = get_memory(min_capacity);
-			if (is_small() || !std::is_trivially_copyable<T>::value) {
-				for (int i = 0; i < size_; ++i) {
+			if (is_small() || !std::is_trivially_move_constructible<T>::value) {
+				std::move(data_, data_ + size_, new_data);
+/*				for (int i = 0; i < size_; ++i) {
 					new (new_data + i) T(data_[i]);
 					data_[i].~T();
 				}
+*/
 				if (!is_small())
 					free(data_);
 			}
