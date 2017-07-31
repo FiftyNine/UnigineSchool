@@ -3,16 +3,18 @@
 #include <fstream>
 #include <algorithm>
 #include <stdio.h>
-#include <unordered_map>
-#include <set>
+// KILL!!! 
+//#include <unordered_map>
+//#include <set>
+//#include <nmmintrin.h>
+#include "hash_functions.cpp"
 
 #define __MIN(a, b) (a < b ? a : b)
 #define __STRCMP(a, b, len) strncmp(a, b, len)
 
 typedef unsigned char uchar;
 typedef unsigned int uint;
-
-using namespace std;
+typedef UINT(*HASH_FUNC)(const CHAR*, SIZE_T);
 
 #pragma region String
 
@@ -47,7 +49,6 @@ inline int fast_compare(const char *ptr0, const char *ptr1, int len) {
 		++offset;
 	}
 
-
 	return 0;
 }
 
@@ -60,10 +61,6 @@ struct String {
 		str(data),
 		len(size)
 	{}
-/*	String(String &&that) :
-		str(std::move(that.str)),
-		len(std::move(that.len))
-	{}*/
 public:
 	struct EqualTo : public std::binary_function<String, String, bool>
 	{
@@ -72,11 +69,9 @@ public:
 			return (__x.len == __y.len) && !__STRCMP(__x.str, __y.str, __x.len);
 		}
 	};
-
-
 	struct Hash {
 		//BKDR hash algorithm
-		size_t operator()(const String& str)const
+		size_t operator()(const String& str) const
 		{
 			return std::_Hash_seq((const unsigned char *)str.str, str.len);
 		}
@@ -101,6 +96,10 @@ bool operator <(const String& x, const String& y) {
 	return compare(x, y) > 0;
 }
 
+bool operator >(const String& x, const String& y) {
+	return compare(x, y) < 0;
+}
+
 bool operator !=(const String& x, const String& y) {
 	return compare(x, y) != 0;
 }
@@ -117,6 +116,22 @@ std::ostream& operator<<(std::ostream& os, const String& str)
 
 /////////////!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!//////////////////
 #include "..\2-MyVector\myvector.h"
+
+struct WordCount {
+	String word;
+	int count;
+	WordCount() :
+		count(0)
+	{};
+
+	explicit WordCount(const String &word, int count):
+		word(word),
+		count(count)
+	{}
+};
+
+//typedef pair<String, int> WordCount;
+typedef myvector<WordCount> WordList;
 
 #pragma region StringPool
 
@@ -154,22 +169,12 @@ private:
 
 #pragma endregion
 
-/// HashMap
-
-
-
-// For ordering
-bool order_by_freq_then_lex(const pair<String, int>& lhs, const pair<String, int>& rhs) {
-		return lhs.second < rhs.second
-			|| lhs.second == rhs.second && lhs.first < rhs.first;
-	}
-
-typedef myvector<pair<String, int> > FreqList;
+#pragma region HashMap
 
 class FrequencyHashMap {
 public:
 	#define MAX_LOAD_FACTOR 0.7
-	typedef size_t Hash;
+	typedef UINT Hash;
 	struct Element {
 		enum class State {
 			Free,
@@ -188,8 +193,19 @@ public:
 			hash(hash),
 			state(State::Used)
 		{};
-	};
+	};	
 public:
+	explicit FrequencyHashMap(HASH_FUNC function) :
+		data(new Element[16]),
+		mSize(16),
+		mUsed(0),
+		hash_function(function)
+	{}
+	FrequencyHashMap() :
+		FrequencyHashMap(Hash_Meiyan)
+	{}
+	~FrequencyHashMap() { delete data; }
+
 	Element * insert(const String &key, int value)
 	{
 		if (load_factor() > MAX_LOAD_FACTOR)
@@ -254,18 +270,20 @@ public:
 		return mUsed / mSize;
 	}
 
-	void to_list(FreqList &list) {
+	void to_list(WordList &list) {
 		list.reserve(size());
 		list.clear();
 		for (int i = 0; i < mSize; i++)
 			if (data[i].state == Element::State::Used) {
-				list.push_back(make_pair(data[i].key, data[i].val));
+				list.push_back(WordCount(data[i].key, data[i].val));
 			}
 	}
 private:
-	Element *data{ nullptr };
-	int mSize{ 0 };
-	int mUsed{ 0 };
+	Element *data;
+	int mSize;
+	int mUsed;
+	HASH_FUNC hash_function;
+
 	Element *find_first(const Hash& hash, const String &key, bool for_insert) const
 	{		
 		int index = hash % mSize;
@@ -304,6 +322,7 @@ private:
 			return data + i;
 		}
 	}
+
 	void put(Element &elem)
 	{
 		assert(mUsed < mSize);
@@ -315,26 +334,20 @@ private:
 		while (data[index].state == Element::State::Used)
 			index++;
 		data[index] = elem;
-		mUsed++;
+		//mUsed++;
 	}
+
 	Hash get_hash(const String &key)
 	{
-		return _Hash_seq((const unsigned char *)key.str, key.len);
+		return hash_function(key.str, key.len);
+		// return _Hash_seq((const unsigned char *)key.str, key.len);
 	}
 };
 
 typedef FrequencyHashMap HashMap;
+// typedef unordered_map<String, int, String::Hash, String::EqualTo> HashMap;
 
-// class HashMap : public unordered_map<String, int, String::Hash, String::EqualTo>
-
-FreqList MakeOrderedList(HashMap map)
-{
-	FreqList list;
-	map.to_list(list);
-	sort(list.begin(), list.end(), order_by_freq_then_lex);
-	return list;
-}
-
+#pragma endregion
 
 #pragma region CharacterTable
 
@@ -417,7 +430,7 @@ public:
 				}
 				size_t len = p - word;
 				if (len == MAX_WORD || p < end && len > 0) { 
-					// Add word to map
+					// Add word to the map
 					String s = strings.add(reinterpret_cast<char *>(word), len);
 					map[s]++;
 					tail = 0;
@@ -431,8 +444,18 @@ public:
 
 #pragma endregion
 
+// For ordering
+bool OrderByCountLexDesc(const WordCount& lhs, const WordCount& rhs) {
+	return lhs.count > rhs.count
+		|| lhs.count == rhs.count && lhs.word > rhs.word;
+}
+
+// #include "bench.cpp"
+
 int main(int argc, char* argv[]) 
 {
+	// bench_hashes(argv[1], argv[2]);
+	// return 0;
 	Reader r(argv[1]);
 	struct stat fileinfo;
 	stat(argv[1], &fileinfo);
@@ -442,13 +465,13 @@ int main(int argc, char* argv[])
 	map.reserve(220000);
 	Parser p;
 	p.parse(r, lookup, strings, map);
-	FreqList ordered = MakeOrderedList(map);
-
+	WordList list;
+	map.to_list(list);
+	std::sort(list.begin(), list.end(), OrderByCountLexDesc);
 	std::ofstream output;
 	output.open(argv[2]);
-
-	for (auto it = ordered.end()-1; it >= ordered.begin(); it--) {
-		output << it->second << " " << it->first << std::endl;
+	for (auto it = list.end()-1; it >= list.begin(); it--) {
+		output << it->count << " " << it->word << std::endl;
 	}
 	return 0;
 }
