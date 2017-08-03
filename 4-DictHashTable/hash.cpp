@@ -1,41 +1,45 @@
-#include <fstream>
 #include <algorithm>
 #include <type_traits>
 #include <cassert>
 #include <cstdio>
-#include <windows.h>
+#include <sys/stat.h>
 
 #define __MIN(a, b) (a < b ? a : b)
-#define __STRCMP(a, b, len) strncmp(a, b, len)
+#define __STRCMP(a, b, len) strncmp(a, b, len) // For testing different comparison functions
+#define __MAX_LOAD_FACTOR 0.6 // rehash when hashmap's LF goes over this value. At 0.6 performance is starting to drop noticeably
+#define __INLINE __forceinline
 
-typedef unsigned char uchar;
+typedef unsigned char UCHAR;
+typedef unsigned int UINT;
+typedef unsigned long DWORD;
+typedef unsigned short WORD;
 typedef UINT (*HashFunc)(const char*, size_t);
 
 #pragma region Hash functions
 
 // MeiYan is the fastest function (out of ~20 benchmarked) for our set of keys
 // Meiyan - 9103.44 ms, std::_Hash - 11394.6 ms, CRC-32 - 11085.9 ms, Murmur3 - 9785.24 ms
-UINT hashMeiyan(const char *str, size_t wrdlen)
+__INLINE UINT hashMeiyan(const char *str, size_t len)
 {
 	const UINT PRIME = 709607;
 	UINT hash32 = 2166136261;
 	const char *p = str;
 
-	for (; wrdlen >= 2 * sizeof(DWORD); wrdlen -= 2 * sizeof(DWORD), p += 2 * sizeof(DWORD)) {
+	for (; len >= 2 * sizeof(DWORD); len -= 2 * sizeof(DWORD), p += 2 * sizeof(DWORD)) {
 		hash32 = (hash32 ^ (_rotl(*(DWORD *)p, 5) ^ *(DWORD *)(p + 4))) * PRIME;
 	}
 	// Cases: 0,1,2,3,4,5,6,7
-	if (wrdlen & sizeof(DWORD)) {
+	if (len & sizeof(DWORD)) {
 		hash32 = (hash32 ^ *(WORD*)p) * PRIME;
 		p += sizeof(WORD);
 		hash32 = (hash32 ^ *(WORD*)p) * PRIME;
 		p += sizeof(WORD);
 	}
-	if (wrdlen & sizeof(WORD)) {
+	if (len & sizeof(WORD)) {
 		hash32 = (hash32 ^ *(WORD*)p) * PRIME;
 		p += sizeof(WORD);
 	}
-	if (wrdlen & 1)
+	if (len & 1)
 		hash32 = (hash32 ^ *p) * PRIME;
 
 	return hash32 ^ (hash32 >> 16);
@@ -43,10 +47,10 @@ UINT hashMeiyan(const char *str, size_t wrdlen)
 
 #pragma endregion
 
-#pragma region String
+#pragma region String: Pascal-style string (StringView), stores a pointer to characters and own length
 
 struct String {
-	char *str{ nullptr };
+	char *str{ nullptr }; // Does't own data, just stores a pointer to it
 	int len{ 0 };
 	String() {}; 
 	explicit String(char * const data, int size) :
@@ -55,7 +59,8 @@ struct String {
 	{}
 };
 
-inline int compare(const String& x, const String& y)
+// x < y is -1, x == y is 0, x > y is 1
+__INLINE int compare(const String& x, const String& y)
 {
 	int m = __MIN(x.len, y.len);
 	int res = __STRCMP(x.str, y.str, m);
@@ -69,27 +74,17 @@ inline int compare(const String& x, const String& y)
 	return res;
 }
 
-inline bool operator <(const String& x, const String& y) {
-	return compare(x, y) > 0;
-}
-
-inline bool operator >(const String& x, const String& y) {
+__INLINE bool operator >(const String& x, const String& y) {
 	return compare(x, y) < 0;
 }
 
-inline bool operator !=(const String& x, const String& y) {
+__INLINE bool operator !=(const String& x, const String& y) {
 	return compare(x, y) != 0;
-}
-
-inline std::ostream& operator<<(std::ostream& os, const String& str)
-{
-	os.write(str.str, str.len);
-	return os;
 }
 
 #pragma endregion
 
-#pragma region Vector
+#pragma region Vector: General purpose scalable storage
 
 template<typename T>
 class Vector {
@@ -97,9 +92,9 @@ public:
 	static const int GROWTH_FACTOR = 4;
 	static const int DEFAULT_CAPACITY = 8;
 private:
-	T * mData;
+	T * mData{ nullptr };
 	int mSize{ 0 };
-	int mCapacity;
+	int mCapacity{ 0 };
 private:
 	T * getMemory(int count) {
 		void * p = nullptr;
@@ -116,7 +111,8 @@ private:
 
 public:
 	Vector() {
-		reserve(DEFAULT_CAPACITY);
+		mData = getMemory(DEFAULT_CAPACITY);
+		mCapacity = DEFAULT_CAPACITY;
 	};
 
 	~Vector()  {
@@ -182,7 +178,7 @@ public:
 		if (new_size <= mSize) {
 			if (std::is_pod<T>::value)
 				mSize = new_size;
-			else {
+			else { // Don't forget to destroy extra objects
 				for (int i = mSize - 1; i >= new_size; i--) {
 					mData[i].~T();
 					mSize--;
@@ -200,7 +196,9 @@ public:
 
 	void reserve(int min_capacity) {
 		if (min_capacity > capacity()) {
+			// Allocate a new chunk of memory and move data into it
 			T * new_data = getMemory(min_capacity);
+			// If data can be trivially moved, it will be taken care of by realloc
 			if (!std::is_trivially_move_constructible<T>::value) {
 				std::move(mData, mData + mSize, new_data);
 				free(mData);
@@ -213,11 +211,12 @@ public:
 
 #pragma endregion
 
-#pragma region WordCount
+#pragma region WordCount: String + Number of occurences
 
 struct WordCount {
 	String word;
 	int count;
+
 	WordCount() :
 		count(0)
 	{};
@@ -227,6 +226,7 @@ struct WordCount {
 		count(count)
 	{}
 
+	// Compares counts first, if equal - compares strings lexicographically
 	static bool greater(const WordCount& lhs, const WordCount& rhs) {
 		return lhs.count > rhs.count
 			|| lhs.count == rhs.count && lhs.word > rhs.word;
@@ -237,144 +237,114 @@ typedef Vector<WordCount> WordList;
 
 #pragma endregion
 
-#pragma region StringPool
+#pragma region StringPool: Memory pool for storing string data
 
 class StringPool {
 public:	
 	StringPool()	
 	{
-		mPools.add();
+		mBlocks.add();
 	}
+	// Create a new String and store data in the pool
 	String add(char *str, int len) 
 	{
-		assert(len < Pool::SIZE);
-		if (Pool::SIZE - mPools.back().used < len)
-			mPools.add();
+		assert(len < Block::SIZE);
+		if (Block::SIZE - mBlocks.back().used < len)
+			mBlocks.add(); // If current block doesn't have enough space, get a new one
 		mLast = len;
-		return mPools.back().add(str, len);
+		return mBlocks.back().add(str, len);
 	}
-	void removeLast()
+	// Remove the newest string from the pool
+	void rollback()
 	{
-		mPools.back().used -= mLast;
+		mBlocks.back().used -= mLast;
+		mLast = 0;
 	}
 private:		
-	struct Pool {
-		const static size_t SIZE = 1024 * 128; // 128 Kb
+	struct Block {
+		const static int SIZE = 1024 * 128;
 		char *data{ nullptr };
 		int used{ 0 };
 		String add(char *str, int len)
 		{
-			memcpy(data + used, str, len);
+			memcpy(data + used, str, len); // We own the data now
 			String res(data + used, len);
 			used += len;
 			return res;
 		}
-
-		Pool() : 
+		Block() : 
 			data(new char[SIZE])
 		{};
-		Pool(Pool &&that) :
+		Block(Block &&that) :
 			data(std::move(that.data)),
 			used(std::move(that.used))
 		{}
-		~Pool() { delete data; }
+		~Block() 
+		{ 
+			delete data; 
+		}
 	};
-	Vector<Pool> mPools;
-	int mLast{ 0 };
+private:
+	Vector<Block> mBlocks; // Allocated blocks of memory
+	int mLast{ 0 }; // Length of the last inserted string
 };
 
 #pragma endregion
 
-#pragma region HashMap
+#pragma region HashMap: One purpose hash map for counting instances of unique strings
 
 class FrequencyHashMap {
-public:
-	#define MAX_LOAD_FACTOR 0.7
+public:	
 	const static int START_SIZE = 16;
-	typedef UINT Hash;
-
-	struct Element {
-		enum class State {
-			Free,
-			Used,
-			Deleted
-		};
-		Hash hash;
-		int val;
-		String key;
-		State state;
-		Element() :
-			state(State::Free) {};
-		Element(const String &key, int val, const Hash &hash) :
-			key(key),
-			val(val),
-			hash(hash),
-			state(State::Used)
-		{};
-	};	
-
-public:
 	explicit FrequencyHashMap(HashFunc function) :
 		mData(new Element[START_SIZE]),
 		mSize(START_SIZE),
 		mUsed(0),
+		mLoadFactor(0.0),
 		mHashFunction(function)
 	{}
 	FrequencyHashMap() :
 		FrequencyHashMap(hashMeiyan)
 	{}
-	~FrequencyHashMap() { delete mData; }
-
-	Element * insert(const String &key, int value)
-	{
-		if (loadFactor() > MAX_LOAD_FACTOR)
-			reserve(mUsed * 2);
-		Hash hash = getHash(key);
-		Element * elem = findFirst(hash, key, true);
-		assert(elem != nullptr);
-		if (elem->state == Element::State::Used) {
-			return nullptr;
-		}
-		else {
-			new (elem) Element(key, value, hash);
-			mUsed++;
-			return elem;
-		}
+	~FrequencyHashMap() { 
+		delete mData; 
 	}
 
 	int& operator[](const String& key)
 	{
-		if (loadFactor() > MAX_LOAD_FACTOR)
-			reserve(mUsed * 2);
+		if (mLoadFactor > __MAX_LOAD_FACTOR) // Check this before looking for an element, or rehashing can invalidate pointer
+			reserve(mUsed * 2); // Growth factor of 2 seems reasonable
 		Hash hash = getHash(key);
-		Element * elem = findFirst(hash, key, true);
+		Element * elem = findFirst(hash, key);
 		assert(elem != nullptr);
-		if (elem->state != Element::State::Used) {			
-			new (elem) Element(key, 0, hash);
+		// Initialize element the first time it's accessed		
+		if (!elem->used) {
+			// new (elem) Element(key, 0, hash);
+			elem->hash = hash;
+			elem->key = key;
+			elem->val = 0;
+			elem->used = true;
 			mUsed++;
+			mLoadFactor = (float)mUsed / mSize;
 		}
 		return elem->val;
 	}
 
-	Element *find(const String& key)
-	{		
-		Hash hash = getHash(key);
-		return findFirst(hash, key, false);
-	}
-
 	void reserve(int count)
 	{
-		int new_size = (int)(count * MAX_LOAD_FACTOR) + 1;
+		int new_size = (int)(count / __MAX_LOAD_FACTOR) + 1;
 		if (new_size > size()) {
 			Element * old_data = mData;
 			int old_size = mSize;
 			mData = new Element[new_size];
 			mSize = new_size;
+			// Move old data to the new place
 			for (int i = 0; i < old_size; i++) {
-				if (old_data[i].state == Element::State::Used) {
-					put(old_data[i]);
+				if (old_data[i].used) {
+					reinsert(old_data[i]); // Keep in mind that collisions can occur
 				}
 			}
+			mLoadFactor = (float)mUsed / mSize;
 			delete old_data;
 		}
 	}
@@ -386,78 +356,69 @@ public:
 
 	float loadFactor() const
 	{
-		return mUsed / mSize;
+		return mLoadFactor;
 	}
 
-	void toList(WordList &list) {
+	void toList(WordList &list) const {
 		list.reserve(size());
 		list.clear();
 		for (int i = 0; i < mSize; i++)
-			if (mData[i].state == Element::State::Used) {
+			if (mData[i].used) {
 				list.add(WordCount(mData[i].key, mData[i].val));
 			}
 	}
+
+private:
+	typedef UINT Hash;
+	struct Element {
+		Hash hash;
+		int val;
+		String key;
+		bool used;
+		Element() :
+			used(false)
+		{};
+	};
 private:
 	Element *mData;
 	int mSize;
 	int mUsed;
+	float mLoadFactor;
 	HashFunc mHashFunction;
 
-	Element *findFirst(const Hash& hash, const String &key, bool for_insert) const
+	Element *findFirst(const Hash& hash, const String &key) const
 	{		
 		//int index = hash && (mSize-1);
 		int index = hash % mSize;
-		Element * first = nullptr;
 		int i = index;
-		bool found = true;
-		while (i < mSize && (mData[i].state == Element::State::Deleted || mData[i].state == Element::State::Used && (mData[i].hash != hash || mData[i].key != key)))
-		{
-			if (!first && mData[i].state == Element::State::Deleted)
-				first = mData+i;
-			i++;
-		}
+		// Look until find a matching or unused element and mind the end of an array 
+		while (i < mSize && mData[i].used && (mData[i].hash != hash || mData[i].key != key))
+			i++;		
 		if (i == mSize) {
+			// Reset to start and keep looking until we hit the full cycle. Faster than doing one cycle with i % mSize
 			i = 0;
-			while (i < index && (mData[i].state == Element::State::Deleted || mData[i].state == Element::State::Used && (mData[i].hash != hash || mData[i].key != key)))
-			{
-				if (!first && mData[i].state == Element::State::Deleted)
-					first = mData + i;
+			while (i < index && mData[i].used && (mData[i].hash != hash || mData[i].key != key))
 				i++;
-			}
-			if (i == index)
-				return nullptr;
+			assert(i != index);
 		}
-		if (mData[i].state == Element::State::Free)
-		{
-			if (for_insert) {
-				if (first)
-					return first;
-				else
-					return mData + i;
-			}
-			else
-				return nullptr;
-		}
-		else {
-			return mData + i;
-		}
+		return mData + i;
 	}
 
-	void put(Element &elem)
+	void reinsert(Element &elem)
 	{
 		assert(mUsed < mSize);
-		int index = elem.hash % mSize;		
-		while (index < mSize && mData[index].state == Element::State::Used)
+		int index = elem.hash % mSize;
+		// Avoiding collision on reinsert
+		while (index < mSize && mData[index].used)
 			index++;
 		if (index == mSize)
 			index = 0;
-		while (mData[index].state == Element::State::Used)
+		while (mData[index].used)
 			index++;
 		mData[index] = elem;
-		//mUsed++;
 	}
 
-	Hash getHash(const String &key)
+	Hash getHash(const String &key) const
 	{
 		return mHashFunction(key.str, key.len);
 	}
@@ -467,50 +428,36 @@ typedef FrequencyHashMap HashMap;
 
 #pragma endregion
 
-#pragma region CharacterTable
+#pragma region CharacterTable: Lookup table for determining valid characters and lowercase conversion
 
 struct CharacterTable {
 	const static int MAX_CHAR = 256;
-	bool allowed[MAX_CHAR];
-	int lower[MAX_CHAR];
-
+	bool valid[MAX_CHAR]; // lookup table of valid (word) characters
+	int lower[MAX_CHAR]; // lookup table for converting to lowercase characters
+	
+	// Prepare table for use
 	template <typename Predicate>
 	void fill(Predicate &pr)
 	{
 		for (int c = 0; c < MAX_CHAR; c++) {
-			lower[c] = towlower(c);
-			allowed[c] = pr(c);
+			valid[c] = pr(c);
+			if (valid[c])
+				lower[c] = towlower(c);			
 		}
 	}
 };
 
 #pragma endregion
 
-#pragma region Reader
+#pragma region Reader: Simple sequential reads from file
 
 class Reader {
-public:
-	const static size_t BUFFER_SIZE = 1024 * 1024; // 1Mb
-	uchar *buffer;
-	size_t data_size;
-
-	Reader(const char *filename) :
-		buffer(new uchar[BUFFER_SIZE + 1])
-	{
-		auto x = fopen_s(&mInput, filename, "r");
-		assert(x == 0);
-	};
-
-	~Reader()
-	{
-		delete buffer;
-		fclose(mInput);
-	}
-
+public:	
+	// Move tail bytes to the start of mBuffer and read the rest of it from file
 	void tailRead(size_t tail)
 	{
-		memcpy(buffer, buffer + data_size - tail, tail);
-		data_size = tail + fread(buffer + tail, sizeof(char), BUFFER_SIZE-tail, mInput);
+		memcpy(mBuffer, mBuffer + mDataSize - tail, tail);
+		mDataSize = tail + fread(mBuffer + tail, sizeof(char), BUFFER_SIZE-tail, mInput);
 	}
 
 	bool done() const
@@ -518,13 +465,37 @@ public:
 		return feof(mInput) > 0;
 	}
 
-private:	
+	UCHAR *buffer() const
+	{
+		return mBuffer;
+	}
+
+	size_t dataSize() const
+	{
+		return mDataSize;
+	}
+
+	Reader(const char *filename) :
+		mBuffer(new UCHAR[BUFFER_SIZE + 1])
+	{
+		fopen_s(&mInput, filename, "r");
+	};
+
+	~Reader()
+	{
+		delete mBuffer;
+		fclose(mInput);
+	}
+private:
+	const static size_t BUFFER_SIZE = 1024 * 1024;
 	FILE *mInput;
+	UCHAR *mBuffer;
+	size_t mDataSize{ 0 };
 };
 
 #pragma endregion
 
-#pragma region Parser
+#pragma region Parser: Read file, parse words from it, store them in memory and count using supplied hashmap
 
 class Parser {
 public:
@@ -532,38 +503,42 @@ public:
 public:	
 	void parse(Reader& reader, CharacterTable &lookup, StringPool &strings, HashMap& map)
 	{
-		int size = 0;
+		// Unparsed word-characters at the end of the buffer, potentially part of a word
 		int tail = 0;
 		while (!reader.done()) {
-			reader.tailRead(tail);
-			size = reader.data_size;
-			uchar *p = reader.buffer;
-			uchar *end = p + size;
+			reader.tailRead(tail); // Move unparsed tail to the start and read more data
+			UCHAR *p = reader.buffer();
+			UCHAR *end = p + reader.dataSize();
 			while (p < end) {
-				while (p < end && !lookup.allowed[*p])
+				// Skip non-word characters
+				while (p < end && !lookup.valid[*p]) {
 					p++;
+				}
 				if (p == end)
 					continue;
-				uchar *word = p;
-				uchar *word_end = __MIN(word + MAX_WORD, end);
-				while (p < word_end && lookup.allowed[*p]) {
+				UCHAR *word = p;
+				UCHAR *word_end = __MIN(word + MAX_WORD, end); // Make sure that we won't go beyond buffer
+				while (p < word_end && lookup.valid[*p]) { 
 					*p = lookup.lower[*p];
+					//*p |= 0x20; // Not worth it
 					p++;
 				}
 				int len = p - word;
-				if (len == MAX_WORD || p < end && len > 0) { 
-					// Add word to the map
+				// Current word may be split in two by the end of the buffer, so remember to parse it on next read
+				if (p == end && len < MAX_WORD) {
+					tail = end - word;
+				} else {
+					// Make a new string in the pool, so map would store a pointer to a permanent memory and not temporary buffer
 					String s = strings.add(reinterpret_cast<char *>(word), len);
 					if (map[s]++ != 0) {
-						strings.removeLast();
+						// This word was already in map, so we don't need to store it in pool twice
+						strings.rollback();
 					}
-					tail = 0;
-					if (len == MAX_WORD)
-						while (p < end && lookup.allowed[*p])
+					tail = 0; // Whatever unparsed character there were, we've taken care of them
+					if (len == MAX_WORD) // If we've hit length limit, cur word and skip following character
+						while (p < end && lookup.valid[*p])
 							p++;
-				}
-				else
-					tail = end - word;
+				}					
 			}
 		}
 	}
@@ -573,24 +548,27 @@ public:
 
 int main(int argc, char* argv[]) 
 {
-	Reader r(argv[1]);
-//	struct stat fileinfo;
-//	stat(argv[1], &fileinfo);
+	struct stat fileinfo;
+	stat(argv[1], &fileinfo);
+	Reader r(argv[1]);	
 	CharacterTable lookup;
 	auto latin_letters = [](int c) { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'; };
 	lookup.fill(latin_letters);
 	StringPool strings;
 	HashMap map;
-//	map.reserve(220000);
+	// Modest estimate is 500 unique words per Mb on sufficiently large files (500Mb+)	
+	map.reserve(fileinfo.st_size/(1024*1024)*500);
 	Parser p;
 	p.parse(r, lookup, strings, map);
 	WordList list;
 	map.toList(list);
+	// Sort list in descending order
 	std::sort(list.begin(), list.end(), WordCount::greater);
-	std::ofstream output;
-	output.open(argv[2]);
+	FILE *output;
+	fopen_s(&output, argv[2], "w");
 	for (auto it = list.begin(); it < list.end(); it++) {
-		output << it->count << " " << it->word << std::endl;
+		fprintf(output, "%d %.*s\n", it->count, it->word.len, it->word.str);
 	}
+	fclose(output);
 	return 0;
 }
