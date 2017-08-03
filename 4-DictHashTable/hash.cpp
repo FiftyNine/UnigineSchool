@@ -542,7 +542,7 @@ public:
 				}
 				int len = p - word;
 				// Current word may be split in two by the end of the buffer, so remember to parse it on next read
-				if (p == end && len < MAX_WORD) {
+				if (p == end && len < MAX_WORD && !reader.done()) {
 					tail = end - word;
 				} else {
 					// Make a new string in the pool, so map would store a pointer to a permanent memory and not temporary buffer
