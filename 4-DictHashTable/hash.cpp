@@ -295,10 +295,10 @@ private:
 
 class FrequencyHashMap {
 public:	
-	const static int START_SIZE = 16;
+	const static size_t START_SIZE = 16; // Must be a power of 2!
 	explicit FrequencyHashMap(HashFunc function) :
 		mData(new Element[START_SIZE]),
-		mSize(START_SIZE),
+		mCapacity(START_SIZE),
 		mUsed(0),
 		mLoadFactor(0.0),
 		mHashFunction(function)
@@ -319,37 +319,37 @@ public:
 		assert(elem != nullptr);
 		// Initialize element the first time it's accessed		
 		if (!elem->used) {
-			// new (elem) Element(key, 0, hash);
 			elem->hash = hash;
 			elem->key = key;
 			elem->val = 0;
 			elem->used = true;
 			mUsed++;
-			mLoadFactor = (float)mUsed / mSize;
+			mLoadFactor = (float)mUsed / mCapacity;
 		}
 		return elem->val;
 	}
 
-	void reserve(int count)
+	void reserve(size_t count)
 	{
-		int new_size = (int)(count / __MAX_LOAD_FACTOR) + 1;
+		// Make sure table's size is always a power of 2 for faster modulos
+		size_t new_size = nextPowerOf2((size_t)(count / __MAX_LOAD_FACTOR));
 		if (new_size > size()) {
 			Element * old_data = mData;
-			int old_size = mSize;
+			size_t old_size = mCapacity;
 			mData = new Element[new_size];
-			mSize = new_size;
+			mCapacity = new_size;
 			// Move old data to the new place
-			for (int i = 0; i < old_size; i++) {
+			for (size_t i = 0; i < old_size; i++) {
 				if (old_data[i].used) {
 					reinsert(old_data[i]); // Keep in mind that collisions can occur
 				}
 			}
-			mLoadFactor = (float)mUsed / mSize;
+			mLoadFactor = (float)mUsed / mCapacity;
 			delete old_data;
 		}
 	}
 
-	int size() const
+	size_t size() const
 	{
 		return mUsed;
 	}
@@ -362,7 +362,7 @@ public:
 	void toList(WordList &list) const {
 		list.reserve(size());
 		list.clear();
-		for (int i = 0; i < mSize; i++)
+		for (int i = 0; i < mCapacity; i++)
 			if (mData[i].used) {
 				list.add(WordCount(mData[i].key, mData[i].val));
 			}
@@ -381,21 +381,20 @@ private:
 	};
 private:
 	Element *mData;
-	int mSize;
+	size_t mCapacity;
 	int mUsed;
-	float mLoadFactor;
+	float mLoadFactor; // Optimization: store load factor and recalculate on insertions
 	HashFunc mHashFunction;
 
 	Element *findFirst(const Hash& hash, const String &key) const
 	{		
-		//int index = hash && (mSize-1);
-		int index = hash % mSize;
+		int index = hash & (mCapacity-1); // hash % mCapacity
 		int i = index;
 		// Look until find a matching or unused element and mind the end of an array 
-		while (i < mSize && mData[i].used && (mData[i].hash != hash || mData[i].key != key))
+		while (i < mCapacity && mData[i].used && (mData[i].hash != hash || mData[i].key != key))
 			i++;		
-		if (i == mSize) {
-			// Reset to start and keep looking until we hit the full cycle. Faster than doing one cycle with i % mSize
+		if (i == mCapacity) {
+			// Reset to start and keep looking until we hit the full cycle. Faster than doing one cycle with i % mCapacity
 			i = 0;
 			while (i < index && mData[i].used && (mData[i].hash != hash || mData[i].key != key))
 				i++;
@@ -406,12 +405,12 @@ private:
 
 	void reinsert(Element &elem)
 	{
-		assert(mUsed < mSize);
-		int index = elem.hash % mSize;
+		assert(mUsed < mCapacity);
+		int index = elem.hash & (mCapacity - 1); // hash % mCapacity
 		// Avoiding collision on reinsert
-		while (index < mSize && mData[index].used)
+		while (index < mCapacity && mData[index].used)
 			index++;
-		if (index == mSize)
+		if (index == mCapacity)
 			index = 0;
 		while (mData[index].used)
 			index++;
@@ -422,6 +421,24 @@ private:
 	{
 		return mHashFunction(key.str, key.len);
 	}
+	
+	size_t nextPowerOf2(size_t val)
+	{
+		// This doesn't affect overall performance, hence no bithacks
+		int power = 0;
+		bool round = true;
+		size_t res = val;
+		while (res > 1) {
+			if (res && 1)
+				round = false;
+			res >>= 1;
+			power++;
+		}
+		if (!round)
+			power++;
+		return 1ULL << power;
+	}
+
 };
 
 typedef FrequencyHashMap HashMap;
@@ -548,16 +565,16 @@ public:
 
 int main(int argc, char* argv[]) 
 {
-	struct stat fileinfo;
-	stat(argv[1], &fileinfo);
+	//struct stat fileinfo;
+	//stat(argv[1], &fileinfo);
 	Reader r(argv[1]);	
 	CharacterTable lookup;
 	auto latin_letters = [](int c) { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'; };
 	lookup.fill(latin_letters);
 	StringPool strings;
 	HashMap map;
-	// Modest estimate is 500 unique words per Mb on sufficiently large files (500Mb+)	
-	map.reserve(fileinfo.st_size/(1024*1024)*500);
+	// Rough estimate is at least 500 unique words per Mb on sufficiently large files (500Mb+)	
+	//map.reserve(fileinfo.st_size/(1024*1024)*500);
 	Parser p;
 	p.parse(r, lookup, strings, map);
 	WordList list;
