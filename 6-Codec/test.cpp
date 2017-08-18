@@ -236,5 +236,5 @@ int main(int, char **)
 	printf("dec %08x, %08x\n", fnv1a(dec1), fnv1a(dec2));
 	printf("lookup %08x\n", fnv1a(lookups));
 	printf("match %08x, %d results\n", fnv1a(matches), matches.size());
-	printf("%d\n", ff);
+//	printf("%d\n", ff);
 }
