@@ -14,20 +14,12 @@ typedef long long llong;
 typedef unsigned int uint;
 typedef unsigned char byte;
 
-//#define __MY_DEBUG
-
 #ifdef _MSC_VER
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
 #pragma comment(linker, "/defaultlib:psapi.lib")
 #pragma message("Automatically linking with psapi.lib")
-#endif
-
-#ifdef __MY_DEBUG
-#define __DEBUG_INLINE __declspec(noinline)
-#else
-#define __DEBUG_INLINE __forceinline
 #endif
 
 llong microtimer()
@@ -123,217 +115,8 @@ uint fnv1a(const vector<T> &v)
 // YOUR CODE HERE
 //////////////////////////////////////////////////////////////////////////
 
-
-// this is the representation of the data stored in the files
-// "this keyword occurred in that docid at that position"
-// keyword == file_name :)
-struct posting
-{
-	int docid;
-	int pos; // 8:24 field_id:in_field_pos
-
-	bool operator<(const posting &b) const
-	{
-		return docid < b.docid || (docid == b.docid && pos < b.pos);
-	}
-};
-
-__DEBUG_INLINE void encode_int(vector<byte> &enc, int val, int pos = -1)
-{
-	do {
-		byte b = val & 0x7F;
-		val >>= 7;
-		if (val)
-			b |= 0x80;
-		if (pos < 0)
-			enc.push_back(b);
-		else {
-			enc.insert(enc.begin() + pos, b);
-			pos++;
-		}
-	} while (val > 0);
-}
-
-__DEBUG_INLINE int decode_int(const vector<byte> &enc, int index, int * val)
-{
-	int res = 0;
-	int shift = 0;
-	byte b = 0;
-	int size = enc.size();
-	bool more = false;
-	do {
-		b = enc[index];
-		more = b & 0x80;
-		b &= 0x7F;
-		res |= b << shift;
-		shift += 7;
-		index++;
-	} while (more && index < size);
-	*val = res;
-	return index;
-}
-
-__DEBUG_INLINE posting * encode_doc_postings(vector<byte> &enc, posting * post, const posting * end)
-{
-	int docid = post->docid;
-	encode_int(enc, docid);
-	int size_pos = enc.size();
-	int prev_pos = 0;
-	while (post < end && post->docid == docid) {
-		encode_int(enc, post->pos - prev_pos);
-		prev_pos = post->pos;
-		post++;
-	}
-	int doc_size = enc.size() - size_pos;
-	encode_int(enc, doc_size, size_pos);
-	return post;
-}
-
-__DEBUG_INLINE int decode_doc_postings(vector<int> &dec, const vector<byte> &enc, int index)
-{
-	int docid = 0;
-	int doc_size = 0;
-	index = decode_int(enc, index, &docid);
-	index = decode_int(enc, index, &doc_size);	
-	int end = index + doc_size;
-	int pos = 0, prev_pos = 0;
-	while (index < end) {
-		dec.push_back(docid);
-		index = decode_int(enc, index, &pos);
-		pos += prev_pos;
-		dec.push_back(pos);
-		prev_pos = pos;
-	}
-	return index;
-}
-
-__DEBUG_INLINE int read_doc(const vector<byte> &enc, int index, int * docid)
-{
-	int doc_size = 0;
-	index = decode_int(enc, index, docid);
-	index = decode_int(enc, index, &doc_size);
-	return index+doc_size;
-}
-
-// takes raw input, emits encoded output, in your very own cool format
-void encode(vector<byte> &enc, const vector<int> &raw)
-{
-	posting * p = (posting *)&raw[0];
-	posting * e = p+raw.size()*sizeof(int)/sizeof(posting);
-	int lookup_bits = 14;	
-	int lookup_size = 1 << lookup_bits;
-	int maxbit = 0;
-	int temp = (e - 1)->docid;
-	while (temp > 0) {
-		maxbit++;
-		temp >>= 1;
-	}
-	if (maxbit < lookup_bits)
-		maxbit = lookup_bits;
-	int * lookup = new int[lookup_size]{};
-	int last_hash = -1;	
-	posting prev{};
-	enc.resize(2 + lookup_size*sizeof(int));
-	while (p < e) {
-		int hash = p->docid >> maxbit - lookup_bits;
-		if (last_hash < 0 || hash != last_hash) {
-			lookup[hash] = enc.size();
-			last_hash = hash;
-		}
-		p = encode_doc_postings(enc, p, e);
-	}
-	enc[0] = lookup_bits;
-	enc[1] = maxbit;
-	memcpy(&enc[2], &lookup[0], lookup_size*sizeof(int));
-	delete lookup;
-}
-
-// takes encoded input, in your very own cool format, emits raw output
-// for verification only, basically
-void decode(vector<int> &dec, const vector<byte> &enc)
-{	
-	int lookup_size = 1 << enc[0];
-	int index = lookup_size*sizeof(int) + 2;
-	while (index < enc.size()) {
-		index = decode_doc_postings(dec, enc, index);
-	}
-}
-
-struct compare_id
-{
-	bool operator()(const posting &a, int b) const
-	{
-		return a.docid < b;
-	}
-};
-
-int ff = 0;
-int ffdp = 0;
-
-int find_first(const vector<byte> &enc, int id)
-{
-	ff++;
-	int hash = id >> (enc[1] - enc[0]);
-	int i1 = *(((int*)&enc[2]) + hash);
-	int i2 = i1;
-	int size = enc.size();
-	int docid = 0;
-	while (i1 < size && docid < id) {
-		i2 = read_doc(enc, i1, &docid);
-		ffdp++;
-		if (docid == id)
-			return i1;
-		i1 = i2;
-	}
-	return -1;
-}
-
-void extract_by_doc(vector<int> &res, const vector<byte> &enc, int id)
-{	
-	int i = find_first(enc, id);
-	if (i >= 0) {
-		decode_doc_postings(res, enc, i);
-	}
-}
-
-// fetches all postings (for both keywords) that match the given id
-// output postings are mixed together, and returned in the ascending in-document position order
-// "which keyword was in that position" data is intentionally lost (in reality, it would not be)
-void lookup(vector<int> &res, const vector<byte> &enc1, const vector<byte> &enc2, int id)
-{
-	int from = (int)res.size();
-	extract_by_doc(res, enc1, id);
-	extract_by_doc(res, enc2, id);
-	if (from == res.size())
-		return;
-	sort((posting*)&res[from], (posting*)(&res[0] + res.size()));
-}
-
-// intersects both keywords
-// returns a list of document ids that match both keywords
-void match(vector<int> &res, const vector<byte> &enc1, const vector<byte> &enc2)
-{	
-	int last = -1;
-	int docid1 = 0;
-	int docid2 = 0;
-	int p1 = 2 + (1 << enc1[0]) * sizeof(int);
-	int p2 = 2 + (1 << enc2[0]) * sizeof(int);
-	while (p1 < enc1.size() && p2 < enc2.size()) {
-		if (docid1 == docid2) {
-			p1 = read_doc(enc1, p1, &docid1);
-			p2 = read_doc(enc2, p2, &docid2);
-		}
-		else if (docid1 < docid2) 
-			p1 = read_doc(enc1, p1, &docid1);
-		else
-			p2 = read_doc(enc2, p2, &docid2);
-		if (docid1 == docid2 && docid1 != last) {
-			res.push_back(docid1);
-			last = docid1;
-		}
-	} 
-}
-
+#include "my.cpp"
+//#include "nop.cpp"
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -383,6 +166,7 @@ int main(int, char **)
 	load(raw1, "the.bin");
 	load(raw2, "i.bin");
 	load(bench, "bench.bin");
+
 	/*
 	set<int> ids;
 	for (int i = 0; i < raw1.size(); i += 2)
@@ -452,5 +236,5 @@ int main(int, char **)
 	printf("dec %08x, %08x\n", fnv1a(dec1), fnv1a(dec2));
 	printf("lookup %08x\n", fnv1a(lookups));
 	printf("match %08x, %d results\n", fnv1a(matches), matches.size());
-	//printf("%d, %d, %.3f\n", ffdp, ff, (float)ffdp/ff);
+	printf("%d\n", ff);
 }
